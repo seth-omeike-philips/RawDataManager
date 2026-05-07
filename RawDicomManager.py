@@ -9,14 +9,22 @@ import struct
 from pydicom.datadict import keyword_for_tag
 from pydicom.tag import Tag
 
+import struct
+
 
 class RawDicomManager:
     def __init__(self, raw_path):
         self.raw_path = raw_path
-        res= readRawAndExtractDicom(raw_path)
-        if not res["success"]:
-            raise ValueError(res["message"])
-        self.ds = res["data"]
+        self.start_offset, self.end_offset = find_dicom_in_raw(raw_path)
+
+        if self.start_offset is None or self.end_offset is None:
+            raise ValueError("No DICOM data found in RAW file")
+        
+        with open(raw_path, "rb") as f:
+            f.seek(self.start_offset)
+            dicom_data = f.read(self.end_offset - self.start_offset)
+        self.ds = pydicom.dcmread(BytesIO(dicom_data))
+        f.close()
 
         self.keyword_to_tag = {keyword_for_tag(key) or Tag(key): Tag(key) for key, val in self.ds.to_json_dict().items()}
     
@@ -31,99 +39,142 @@ class RawDicomManager:
     
     def saveAsDCMData(self, output_path):
         self.ds.save_as(output_path)
-    
+
     def saveAsRawData(self, output_path):
-        ds = pydicom.dcmread(self.raw_path, force=True)
 
-        if (0x01f7, 0x10cc) not in ds:
-            raise ValueError("ChessDataSet not found")
+        original_dicom_size = self.end_offset - self.start_offset
 
-        elem = ds[0x01f710cc]
-        original_value = elem.value
+        print(f"DICOM start: {self.start_offset}")
+        print(f"DICOM end:   {self.end_offset}")
+        print(f"DICOM size:  {original_dicom_size}")
 
-        # Serialize new DICOM
         buffer = BytesIO()
         self.ds.save_as(buffer)
-        dicom_data = buffer.getvalue()
+        new_dicom_data = buffer.getvalue()
 
-        res = getRAWOffset(self.raw_path)
-        if not res["success"]:
-            return res  
-        dicom_offset = res["data"]
+        print(f"New DICOM size: {len(new_dicom_data)}")
 
-        prefix = original_value[:dicom_offset]
-        new_value = prefix + dicom_data
+        if len(new_dicom_data) > original_dicom_size:
+            return {"success": False,"message": "Failed to save as RAW data",}
 
-        if len(new_value) > len(original_value):
-            raise ValueError("New DICOM larger than original — cannot safely overwrite")
 
-        new_value = new_value.ljust(len(original_value), b"\x00")
+        padded_dicom = new_dicom_data.ljust(original_dicom_size,b"\x00")
 
-        elem.value = new_value
+        with open(self.raw_path, "rb") as f:
+            raw_bytes = f.read()
 
+        new_raw = (raw_bytes[:self.start_offset] + padded_dicom + raw_bytes[self.end_offset:])
+        f.close()
+
+        # -----------------------------------------
+        # Output handling
+        # -----------------------------------------
 
         if os.path.isdir(output_path):
-            output_path = os.path.join(output_path, "edited.rawmdu")
-        ds.save_as(output_path)
-        print(f"Saved new RAW file with updated DICOM at {output_path}")
+            output_path = os.path.join(output_path,"edited.rawmdu")
+
+        with open(output_path, "wb") as f:
+            f.write(new_raw)
+        f.close()
+
+        print(f"Saved updated RAW file to: {output_path}")
+        return {"success": True,"output_path": output_path,}
     def __str__(self):
         return self.viewDicomData()
 
 
-def getChessDataSet(rawPath: str):
-    try:
-        ds = pydicom.dcmread(rawPath, defer_size="1KB", force=True)
+def find_first_dicm_offset(raw_path: str) -> int:
+    with open(raw_path, "rb") as f:
+        chunk_size = 1024 * 1024 # 1 MB
+        overlap = b""
+        pos = 0
         
-        if (0x01f7, 0x10cc) in ds:
-            ChessDataSet = ds[0x01f710cc]
-            return {"data": ChessDataSet, "success": True, "message": "ChessDataSet found in DICOM dataset."}
-        else:
-            print("Pixel Data (01F7,10cc) not found in DICOM dataset.")
-            return {"success": False, "message": "ChessDataSet not found in DICOM dataset."}
-    except Exception as e:
-        print(f"Error occurred while processing raw file: {e}")
-        return {"success": False, "message": f"Error occurred while processing raw file: {e}"}
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            
+            data = overlap + chunk
+            i = data.find(b"DICM")
+            
+            if i != -1:
+                return pos + i - len(overlap)
+            
+            overlap = data[-3:]
+            pos += chunk_size
 
-def getRAWOffset(rawPath: str):
-    try:
-        res = getChessDataSet(rawPath)
-        if not res["success"]:
-            print("ChessDataSet not found. Cannot calculate DICOM offset.")
-            return {"success": False, "message": "ChessDataSet not found. Cannot calculate DICOM offset."}
-        ChessDataSet = res["data"]
+    return -1
 
-        ChessDataStructVersion = struct.unpack("@l", ChessDataSet.value[0:4])[0]
-        SeriesInitStructSize = struct.unpack("@l", ChessDataSet.value[4:8])[0]
-        NumDicoms = struct.unpack("@l", ChessDataSet.value[8:12])[0]
+def find_dicom_in_raw(path):
 
-        ChessDataStructSize = 0
-        if ChessDataStructVersion == 100:
-            ChessDataStructSize = 111 * 4
-        elif ChessDataStructVersion == 200:
-            ChessDataStructSize = 416 * 4
-        DICOMOffset = ChessDataStructSize + SeriesInitStructSize
-        return {"data": DICOMOffset, "success": True, "message": "DICOM offset calculated successfully."}
-    except Exception as e:
-        print(f"Error occurred while processing raw file: {e}")
-        return {"success": False, "message": f"Error occurred while processing raw file: {e}"}
+    VALID_VR = {
+        b'AE', b'AS', b'AT', b'CS', b'DA', b'DS', b'DT',
+        b'FD', b'FL', b'IS', b'LO', b'LT', b'OB', b'OD',
+        b'OF', b'OL', b'OW', b'PN', b'SH', b'SL', b'SQ',
+        b'SS', b'ST', b'TM', b'UC', b'UI', b'UL', b'UN',
+        b'UR', b'US', b'UT'
+    }
 
-def readRawAndExtractDicom(rawPath: str):
-    try:
-        res = getChessDataSet(rawPath)
-        if not res["success"]:
-            return res
-        ChessDataSet = res["data"]
+    MAX_ELSCINT_GAP = 1* 1024 * 1024  # 1 MB
 
-        res = getRAWOffset(rawPath)
-        if not res["success"]:
-            return res  
-        DICOMOffset = res["data"]
+    CHUNK_SIZE = 1024 * 1024  # 1 MB
 
-        ds_new = pydicom.dcmread(BytesIO(ChessDataSet.value[DICOMOffset:]))
-        return {"success": True, "message": "DICOM data extracted successfully.", "data": ds_new}
-    except Exception as e:
-        print(f"Error reading DICOM from raw file: {e}")
-        return {"success": False, "message": f"Error reading DICOM from raw file: {e}"}
+    with open(path, "rb") as f:
+
+        dicm_offset = find_first_dicm_offset(path)
+
+        if dicm_offset is None:
+            raise ValueError("No DICM marker found")
+
+        # Real DICOM starts 128 bytes before DICM
+        start = max(0, dicm_offset - 128)
+
+        f.seek(start)
+
+        print(f"Starting scan at {start}")
+
+        last_valid_pos = start
+        last_elscint_pos = start
+
+        while True:
+
+            chunk_start = f.tell()
+
+            chunk = f.read(CHUNK_SIZE)
+
+            if not chunk:
+                print("Reached EOF")
+                break
+
+            chunk_len = len(chunk)
+
+            i = 0
+
+            while i < chunk_len - 8:
+
+                absolute_pos = chunk_start + i
+
+                if chunk[i:i+8] == b'ELSCINT':
+
+                    last_elscint_pos = absolute_pos
+                    last_valid_pos = absolute_pos
+
+
+                vr = chunk[i+4:i+6]
+
+                if vr in VALID_VR:
+                    last_valid_pos = absolute_pos
+
+                if (absolute_pos - last_elscint_pos) > MAX_ELSCINT_GAP:
+
+                    print(f"No ELSCINT detected for {MAX_ELSCINT_GAP} bytes.")
+                    print(f"Stopping at {last_valid_pos}")
+
+                    return (start, last_valid_pos)
+
+                i += 1
+
+        return (start, last_valid_pos)
 
 def editDicomData(ds,path:str,new_value:str|int|float, keyword_to_tag):
     keys = path.split(".")

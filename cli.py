@@ -216,8 +216,11 @@ def run_cli():
         # ---- SAVE RAW ----
         elif choice == "4":
             output_path = input("Output RAW file path: ").strip()
-            manager.saveAsRawData(output_path)
-            print("Saved RAW file.")
+            res = manager.saveAsRawData(output_path)
+            if res["success"]:
+                print("Saved RAW file.")
+            else:
+                print(res["message"])
 
         # ---- SAVE DCM ----
         elif choice == "5":
