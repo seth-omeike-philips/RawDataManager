@@ -1,0 +1,4 @@
+//"ReferringPhysicianName": "[Changed]" // Old value: 'ReferringPhysField'
+//"StationName": "[Changed]", // Old value: 'BAY 2'
+//"PatientName": "[Changed]", // Old value: 'LastName123^FirstName456^^^'
+ // Old value: 'PatientID123'

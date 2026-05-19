@@ -1,6 +1,5 @@
 {
-    "StationName": "[Changed]",
-    "PatientName": "[Changed]",
-    "PatientID":"[Changed]",
-    "ReferringPhysicianName": "[Changed]"
+    "PatientID":"PatientID1234"
 }
+
+

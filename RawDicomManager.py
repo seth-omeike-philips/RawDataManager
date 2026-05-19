@@ -8,9 +8,18 @@ import pydicom
 import struct
 from pydicom.datadict import keyword_for_tag
 from pydicom.tag import Tag
-
+from bcolors import bcolors
 import struct
 
+"""
+no_change_no_pydicom imports ok, recons ok 
+no_change imports ok, recon ok 
+even_length_change imports ok, recon ok 
+smaller_length_change imports with struggle, recon fails
+larger_length_change imports failed, recon fails
+
+
+"""
 
 class RawDicomManager:
     def __init__(self, raw_path):
@@ -38,47 +47,61 @@ class RawDicomManager:
 
     
     def saveAsDCMData(self, output_path):
-        self.ds.save_as(output_path)
-
-    def saveAsRawData(self, output_path):
+        self.ds.save_as(output_path,write_like_original=True)
+    def saveAsRawDataInPlace(self, output_path):
 
         original_dicom_size = self.end_offset - self.start_offset
-
         print(f"DICOM start: {self.start_offset}")
         print(f"DICOM end:   {self.end_offset}")
         print(f"DICOM size:  {original_dicom_size}")
 
+        with open(self.raw_path, "rb") as f:
+            raw_bytes = bytearray(f.read())
+
+
+        original_region = raw_bytes[self.start_offset:self.end_offset]
+
+        print(f"Original embedded region size: {len(original_region)}")
+
         buffer = BytesIO()
         self.ds.save_as(buffer,write_like_original=True)
         new_dicom_data = buffer.getvalue()
-
+    
         print(f"New DICOM size: {len(new_dicom_data)}")
 
+        if len(new_dicom_data) > original_dicom_size + 16:
+            return {
+                "success": False,
+                "message": "New DICOM too large for in-place replacement"
+            }
+
+
+        if len(new_dicom_data) < original_dicom_size:
+            print(f"New DICOM is smaller than original by {original_dicom_size - len(new_dicom_data)} bytes. Padding with zeros.")
+            new_dicom_data = new_dicom_data.ljust(original_dicom_size, b"\x00")
+
+        # If slightly larger but within tolerance, we still enforce fixed slot
         if len(new_dicom_data) > original_dicom_size:
-            return {"success": False,"message": "Failed to save as RAW data",}
+            print(f"New DICOM is larger than original by {len(new_dicom_data) - original_dicom_size} bytes, but within tolerance. Truncating to fit.")
+            new_dicom_data = new_dicom_data[:original_dicom_size]
 
 
-        padded_dicom = new_dicom_data.ljust(original_dicom_size,b"\x00")
+        raw_bytes[self.start_offset:self.end_offset] = new_dicom_data
 
-        with open(self.raw_path, "rb") as f:
-            raw_bytes = f.read()
-
-        new_raw = (raw_bytes[:self.start_offset] + padded_dicom + raw_bytes[self.end_offset:])
-        f.close()
-
-        # -----------------------------------------
-        # Output handling
-        # -----------------------------------------
 
         if os.path.isdir(output_path):
-            output_path = os.path.join(output_path,"edited.rawmdu")
+            output_path = os.path.join(output_path, "edited.rawmdu")
 
         with open(output_path, "wb") as f:
-            f.write(new_raw)
-        f.close()
+            f.write(raw_bytes)
 
         print(f"Saved updated RAW file to: {output_path}")
-        return {"success": True,"output_path": output_path,}
+
+        return {
+            "success": True,
+            "output_path": output_path
+        }
+
     def __str__(self):
         return self.viewDicomData()
 
@@ -176,45 +199,127 @@ def find_dicom_in_raw(path):
 
         return (start, last_valid_pos)
 
-def editDicomData(ds,path:str,new_value:str|int|float, keyword_to_tag):
+
+from pydicom.valuerep import PersonName
+
+
+def editDicomData(ds, path: str, new_value: str | int | float, keyword_to_tag):
+
     keys = path.split(".")
     current_level = ds
     vr = None
-    
-    # Exclude last key
+
     for key in keys[:-1]:
         tagKey = keyword_to_tag.get(key, key)
-        if type(tagKey) == str and tagKey.isdigit():
+        if isinstance(tagKey, str) and tagKey.isdigit():
             current_level = current_level.value[int(tagKey)]
         else:
-            # tagKey is of type Tag
             if tagKey not in current_level:
-                return {"success":False, "message": f"Path not found: {path}"}
+                return {"success": False,"message": f"{bcolors.FAIL}Path not found: {path}{bcolors.END}" }
+
             current_level = current_level[tagKey]
             vr = current_level.VR or vr
-    
-     # Check if the last key is a subkey (like 'Alphabetic' in a Person Name)
+
     last_key = keyword_to_tag.get(keys[-1], keys[-1])
-    
 
-    if type(last_key) == str and last_key.isdigit():
+
+    if isinstance(last_key, str) and last_key.isdigit():
+        original_value = str(current_level.value[int(last_key)])
         validated_res = validate_vr(vr, new_value)
+
         if validated_res["success"] is False:
-            return {"success":False, "message": validated_res["message"]}
-        current_level.value[int(last_key)] = validated_res["value"]
-        return {"success":True, "message": f"Updated {path} to {validated_res['value']}"}
+            return validated_res
+
+        validated_value = str(validated_res["value"])
+
+        original_len = len(original_value.encode("utf-8"))
+        new_len = len(validated_value.encode("utf-8"))
+
+        # This causes shifting of all downstream binary data and breaks RAW reconstruction, so we reject it outright
+        if new_len > original_len:
+            return {
+                "success": False,
+                "message":
+                    f"{bcolors.FAIL}New value exceeds allowed byte length.{bcolors.END}\n"
+                    f"Original max length: {original_len} bytes\n"
+                    f"New value length: {new_len} bytes\n\n"
+                    f"{bcolors.FAIL}Variable-length expansion shifts downstream binary "
+                    f"data and causes RAW reconstruction failure.{bcolors.END}"
+            }
+
+
+        # Local padding to preserve byte length
+        padded_value = pad_value_for_vr(vr,validated_value, original_len)
+        current_level.value[int(last_key)] = padded_value
+        return {
+            "success": True,
+            "message": f"{bcolors.OKGREEN}Updated {path} (original={original_len} bytes, new={new_len} bytes){bcolors.END}"
+        }
     else:
-        # last_key is of type Tag
         if last_key not in current_level:
-                return {"success":False, "message": f"Path not found: {path}"}
-        vr = current_level[last_key].VR or vr
+            return {
+                "success": False,
+                "message": f"{bcolors.FAIL}Path not found: {path}{bcolors.END}"
+            }
+
+        element = current_level[last_key]
+        vr = element.VR or vr
+
         validated_res = validate_vr(vr, new_value)
+
         if validated_res["success"] is False:
-            return {"success":False, "message": validated_res["message"]}
-        current_level[last_key].value = validated_res["value"]
-        return {"success":True, "message": f"Updated {path} to {validated_res['value']}"}
+            return validated_res
+
+        validated_value = str(validated_res["value"])
+        original_value = str(element.value)
 
 
+        original_len = len(original_value.encode("utf-8"))
+        new_len = len(validated_value.encode("utf-8"))
+
+        if new_len > original_len:
+            return {
+                "success": False,
+                "message":
+                    f"{bcolors.FAIL}New value exceeds allowed byte length.{bcolors.END}\n"
+                    f"Original max length: {original_len} bytes\n"
+                    f"New value length: {new_len} bytes\n"
+                    f"{bcolors.FAIL}Expanding embedded DICOM fields changes internal "
+                    f"binary structure and causes RAW reconstruction failure.{bcolors.END}"
+            }
+
+        padded_value = pad_value_for_vr(vr, validated_value, original_len)
+
+        if vr == "PN":
+            element.value = PersonName(padded_value)
+        else:
+            element.value = padded_value
+
+        return {
+            "success": True,
+            "message":
+                f"{bcolors.OKGREEN}Updated {path} "
+                f"(original={original_len} bytes, "
+                f"new={new_len} bytes){bcolors.END}"
+        }
+
+
+def pad_value_for_vr(vr, value: str, target_len: int):
+
+    encoded = value.encode("utf-8")
+    padding_needed = target_len - len(encoded)
+    if padding_needed <= 0:
+        return value
+    
+    # UI uses NULL padding
+    if vr == "UI":
+        return value + ("\0" * padding_needed)
+
+    # Text VRs typically use SPACE padding
+    elif vr in ["PN", "LO", "SH", "ST", "LT", "UT", "CS", "AE"]:
+        return value + (" " * padding_needed)
+
+    return value + (" " * padding_needed)
 
 def validate_vr(vr, value):
     try:

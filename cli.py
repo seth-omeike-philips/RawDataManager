@@ -1,21 +1,8 @@
 import json
 import os
 from RawDicomManager import RawDicomManager
+from bcolors import bcolors
 
-class bcolors:
-    HEADER = '\x1B[1m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-    END = '\033[0m'
-    RED = '\033[31m'
-    GREEN = '\033[32m'
-    ITALIC = '\033[3m'
 
 
 # Build command: python -m PyInstaller --onefile --hidden-import=pydicom cli.py
@@ -160,14 +147,14 @@ def run_cli():
         #raw_path = r"C:\Users\320308966\Documents\RawDataManager\1.3.46.670589.61.128.7.2026020311233319822097493910003.rawmdu"
 
         if not os.path.exists(raw_path):
-            print("File not found.")
+            print(f"{bcolors.FAIL}File not found.{bcolors.END} Please try again.")
             raw_path = None
             continue
         
         try:
             manager = RawDicomManager(raw_path)
         except Exception as e:
-            print(f"Failed to load RAW file: {e}")
+            print(f"{bcolors.FAIL}Failed to load RAW file: {e}{bcolors.END}")
             raw_path = None
 
     print(msg)
@@ -200,13 +187,13 @@ def run_cli():
             json_path = input("Enter JSON file path: ").strip()
 
             if not os.path.exists(json_path):
-                print("JSON file not found.")
+                print(f"{bcolors.FAIL}JSON file not found.{bcolors.END}")
                 continue
 
             with open(json_path, "r") as f:
                 edits = json.load(f)
             if not isinstance(edits, dict):
-                print("Invalid JSON format. Expected a dictionary of path:value pairs.")
+                print(f"{bcolors.FAIL}Invalid JSON format. Expected a dictionary of path:value pairs.{bcolors.END}")
                 continue
 
             for path, value in edits.items():
@@ -216,26 +203,26 @@ def run_cli():
         # ---- SAVE RAW ----
         elif choice == "4":
             directory = os.path.dirname(raw_path)
-            output_path = os.path.join(directory,f"edited_{os.path.basename(raw_path)}")
-            res = manager.saveAsRawData(output_path)
+            output_path = os.path.join(directory,f"hold_length_changes_{os.path.basename(raw_path)}")
+            res = manager.saveAsRawDataInPlace(output_path)
             if res["success"]:
                 print("Saved RAW file.")
             else:
-                print(res["message"])
+                print(f"{bcolors.FAIL}{res['message']}{bcolors.END}")
 
         # ---- SAVE DCM ----
         elif choice == "5":
             directory = os.path.dirname(raw_path)
             output_path = os.path.join(directory,f"edited_{os.path.basename(raw_path)}")
             manager.saveAsDCMData(output_path)
-            print("Saved DICOM file.")
+            print(f"{bcolors.OKGREEN}Saved DICOM file.{bcolors.END} Output path: {output_path}")
 
         elif choice == "6":
             print("Exiting.")
             break
 
         else:
-            print("Invalid option.")
+            print(f"{bcolors.FAIL}Invalid option.{bcolors.END}")
     
 if __name__ == "__main__":
     run_cli()
