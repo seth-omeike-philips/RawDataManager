@@ -49,7 +49,7 @@ class RawDicomManager:
         print(f"DICOM size:  {original_dicom_size}")
 
         buffer = BytesIO()
-        self.ds.save_as(buffer)
+        self.ds.save_as(buffer,write_like_original=True)
         new_dicom_data = buffer.getvalue()
 
         print(f"New DICOM size: {len(new_dicom_data)}")
@@ -115,7 +115,7 @@ def find_dicom_in_raw(path):
         b'UR', b'US', b'UT'
     }
 
-    MAX_ELSCINT_GAP = 1* 1024 * 1024  # 1 MB
+    MAX_ELSCINT_GAP = 10* 1024 * 1024  # 10 MB
 
     CHUNK_SIZE = 1024 * 1024  # 1 MB
 

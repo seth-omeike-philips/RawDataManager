@@ -215,7 +215,8 @@ def run_cli():
 
         # ---- SAVE RAW ----
         elif choice == "4":
-            output_path = input("Output RAW file path: ").strip()
+            directory = os.path.dirname(raw_path)
+            output_path = os.path.join(directory,f"edited_{os.path.basename(raw_path)}")
             res = manager.saveAsRawData(output_path)
             if res["success"]:
                 print("Saved RAW file.")
@@ -224,7 +225,8 @@ def run_cli():
 
         # ---- SAVE DCM ----
         elif choice == "5":
-            output_path = input("Output DCM file path: ").strip()
+            directory = os.path.dirname(raw_path)
+            output_path = os.path.join(directory,f"edited_{os.path.basename(raw_path)}")
             manager.saveAsDCMData(output_path)
             print("Saved DICOM file.")
 
